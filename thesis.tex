@@ -4,7 +4,7 @@
 %%==================================================
 
 % 双面打印
-\documentclass[doctor, fontset=adobe, openright, twoside]{sjtuthesis}
+\documentclass[master, fontset=adobe, openright, twoside, zihao=-4]{sjtuthesis}
 % \documentclass[bachelor, fontset=adobe, openany, oneside, submit]{sjtuthesis}
 % \documentclass[master, fontset=adobe, review]{sjtuthesis}
 % \documentclass[%
@@ -54,12 +54,12 @@
 
 %% 目录、插图目录、表格目录
 \tableofcontents
-\listoffigures
-\addcontentsline{toc}{chapter}{\listfigurename} %将插图目录加入全文目录
-\listoftables
-\addcontentsline{toc}{chapter}{\listtablename}  %将表格目录加入全文目录
-\listofalgorithms
-\addcontentsline{toc}{chapter}{算法索引}        %将算法目录加入全文目录
+% \listoffigures
+% \addcontentsline{toc}{chapter}{\listfigurename} %将插图目录加入全文目录
+% \listoftables
+% \addcontentsline{toc}{chapter}{\listtablename}  %将表格目录加入全文目录
+% \listofalgorithms
+% \addcontentsline{toc}{chapter}{算法索引}        %将算法目录加入全文目录
 
 \include{tex/symbol} % 主要符号、缩略词对照表
 
@@ -67,11 +67,14 @@
 
 %% 正文内容
 \pagestyle{main}
-\include{tex/xulun}
-\include{tex/intro}
-\include{tex/example}
-\include{tex/faq}
-\include{tex/summary}
+\include{tex/1_intro}
+\include{tex/2_related_work}
+\include{tex/3_system_design}
+\include{tex/4_system_implementation}
+\include{tex/5_experiment}
+%\include{tex/example}
+%\include{tex/faq}
+\include{tex/6_summary}
 
 \appendix	% 使用英文字母对附录编号，重新定义附录中的公式、图图表编号样式
 \renewcommand\theequation{\Alph{chapter}--\arabic{equation}}	
@@ -80,10 +83,10 @@
 \renewcommand\thealgorithm{\Alph{chapter}--\arabic{algorithm}}
 
 %% 附录内容，本科学位论文可以用翻译的文献替代。
-\include{tex/app_setup}
-\include{tex/app_eq}
-\include{tex/app_cjk}
-\include{tex/app_log}
+%\include{tex/app_setup}
+%\include{tex/app_eq}
+%\include{tex/app_cjk}
+%\include{tex/app_log}
 
 \backmatter	% 文后无编号部分 
 
@@ -111,10 +114,10 @@
   % 盲审论文中，发表学术论文及参与科研情况等仅以第几作者注明即可，不要出现作者或他人姓名
   \ifsjtu@review\relax
     \include{tex/pubreview}
-    \include{tex/projectsreview}  
+    %\include{tex/projectsreview}  
   \else
     \include{tex/pub}	      %% 发表论文
-    \include{tex/projects}  %% 参与的项目
+    %\include{tex/projects}  %% 参与的项目
   \fi
 \fi
 
