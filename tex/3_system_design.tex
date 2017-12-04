@@ -103,6 +103,7 @@ Client如何接入系统就会是一个问题，在DOBBS中我们对于全局热
 储集群的热度值。所以Reporter会调用内部接口实时监测存储集群所有OSD上的IOPS值，并进行汇总。而Monitor的热度我们用Monitor的CPU和内存利用率来表示，同样Reporter调用Linux系统调用来实时获取Monitor所在机器的CPU和内存利用率。
 在获得了存储集群的IOPS和Monitor的使用率之后，Repoter将两者归一化之后组合起来，作为子集群的热度值。下面三个等式描述了子集群热度值的计算方式：
 
+
 \begin{equation}
     \label{eq:stheat}
     StorageHeat = \frac{\alpha \sum^n SIO + \beta \sum^m HIO}{m+n}
@@ -118,26 +119,50 @@ Client如何接入系统就会是一个问题，在DOBBS中我们对于全局热
     SubclusterHeat = StorageHeat + MonitorHeat
 \end{equation}
 
-
-等式\ref{eq:stheat}表示存储集群的热度，其中$SIO$和$HIO$分别表示SSD和HDD的IOPS值，$m$和$n$分别表示了子集群的存储集群内部SSD OSD的数量和HDD OSD的数量。\alpha和\beta是两个经验常数，在局部热均衡的过程中，我们已经将过热
-的对象移动到SSD上而冷的对象放置于HDD上了，所以如果直接来看SSD和HDD对IOPS的贡献并不准确。\alpha和\beta起到了归一化的作用，他们是经过大量实验调参得到的数值。等式\ref{eq:monheat}表示的是Monitor的热度，这里的CPU利用率和
-内存利用率都是用百分数表示的，之所以用二者的最大值是因为Monitor在处理大量数据流信息的时候需要存储在内存中，而计算是周期性的，所以用二者的最大值来表示Monitor的热度值。\ref{eq:subheat}则是将存储集群热度和Monitor热度相加来
+等式\ref{eq:stheat}表示存储集群的热度，其中$SIO$和$HIO$分别表示SSD和HDD的IOPS值，$m$和$n$分别表示了子集群的存储集群内部SSD OSD的数量和HDD OSD的数量。$\alpha$和$\beta$是两个经验常数，在局部热均衡的过程中，我们已经将过热
+的对象移动到SSD上而冷的对象放置于HDD上了，所以如果直接来看SSD和HDD对IOPS的贡献并不准确。$\alpha$和$\beta$起到了归一化的作用，他们是经过大量实验调参得到的数值。等式\ref{eq:monheat}表示的是Monitor的热度，这里的CPU利用率和
+内存利用率都是用百分数表示的，之所以用二者的最大值是因为Monitor在处理大量数据流信息的时候需要存储在内存中，而计算是周期性的，所以用二者的最大值来表示Monitor的热度值。等式\ref{eq:subheat}则是将存储集群热度和Monitor热度相加来
 表示子集群的热度值。Repoter定期计算所在子集群的热度信息，然后向Center节点汇报。
 
 在Center节点上，它会保存所有子集群最新的热度值，在每次所有子集群汇报之后都会更新热度值。因此，Center节点总是保存最新的子集群的热度值。为了体现子集群热度的不均衡情况，我们用所有子集群热度的标准差来刻画子集群热度的不平衡，那么
 标准差越大也就说明子集群的热度越不平衡。当然，仅仅根据子集群间的热度不均衡来触发全局热均衡必然是不充分的，我们还通过一个阈值来表示是否有子集群过热，如果出现一个子集群的热度值超过阈值，则会触发全局热均衡。我们通过下面的算法来判断
 是否需要启动全局热均衡，并确定应该从哪个子集群开始做全局热均衡。
 
-
 \begin{algorithm}
     % \begin{algorithm}[H] % 强制定位
-    \caption{求100以内的整数和}
-    \label{algo:sum_100}
+    \caption{子集群热度不均衡检测算法}
+    \label{algo:imbadect}
     \begin{algorithmic}[1] %每行显示行号
-    \Ensure 100以内的整数和 % 输出
-    \State $sum \gets 0$
-    \For{$i = 0 \to 100$}
-        \State $sum \gets sum + i$
-      \EndFor
+    \Require $H_k$：子集群k的热度值，$HT$：用户自定义的热度阈值，$M$：最大热均衡迁移数量，$DT$：用户自定义的标准差阈值，$SubNum$：子集群数量
+    \State {$H_i \gets getLargestHeatValue()$}
+    \State {$currentSD \gets getCurrentStandardDeviation()$}
+    \State {$currentMigration \gets 0 $}
+    
+    \While {$ H_i > HT$ or $currentSD > DT$}
+      \If{$currentMigration < M$}
+        \State {$H_j \gets getSmallestHeatValue()$}
+        \State {$tryTimes \gets 0 $}
+        \While{$H_j > HT$}
+          \State $//$ All sub clusters are overheated
+          \If{$ tryTimes > SubNum$}
+            \State{$abortDetection()$}
+          \EndIf
+          \State {$sleep()$}
+          \State {$H_j \gets getSmallestHeatValue()$}
+          \State{$tryTimes \gets tryTimes + 1$}
+        \EndWhile
+        \State{ $applyMigration(i, j)$ }
+        \State {$currentMigration \gets currentMigration + 1 $}
+      \EndIf
+      \State {$currentSD \gets getCurrentStandardDeviation()$}
+      \State {$H_i \gets getLargestHeatValue()$}
+    \EndWhile
     \end{algorithmic}
 \end{algorithm}
+
+算法\ref{algo:imbadect}第1-3行是准备工作，获得热度值最大的子集群编号和热度值，计算实时集群热度值的标准差以及初始化当前热均衡迁移数量。第4-22行是算法的主循环，当存在一个
+子集群热度值大于阈值或者当前标准差大于标准差阈值，则进入主循环进行后续的操作。第5行保证了，整个系统的全局热均衡迁移的数量被控制在一个范围内，这样不会让大量热均衡迁移破坏整个
+集群的效率。第8-16行则表示了如果集群中热度值最低的子集群的热度仍大于最大热度阈值，那么将等待出现比阈值小的子集群，否则在尝试一定次数之后就中断整个监控算法，然后想用户抛出异常，
+通知用户所有子集群的热度值都超过了阈值，提醒系统管理员可能需要增加硬件。第17行则表示，算法已经寻找到了源子集群和目标子集群，并启动全局热均衡迁移。
+
+
