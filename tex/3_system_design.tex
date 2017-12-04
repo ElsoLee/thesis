@@ -16,13 +16,11 @@ Storage Device）。为了提升DOBBS系统的高扩展性，我们借用了Ceph
 之后，我们将部分SSD对象存储设备和部分HDD对象存储设备共同组织成一个混合存储池（Hybrid Storage Pool）。混合存储池中的对象存储设备是可以由用户配置的，
 通过这样的组织，DOBBS的底层存储集群可以简单高效地扩展。一般性的，每个混合存储池都至少包括一个SSD对象存储设备和至少一个HDD对象存储设备。
 
-
 \begin{figure}[!htp]
     \centering
     \includegraphics[width=16cm]{example/Arch.pdf}
     \bicaption[fig:arch]{DOBBS系统架构图}{DOBBS系统架构图}{Fig}{Architecture of DOBBS}
    \end{figure}
-
 
 如图\ref{fig:arch}所示为DOBBS的系统架构图。DOBBS的架构大致可以分为两层，一层是存储集群也就是混合存储池，一层是监控器（Monitor）。DOBBS包含大量
 的混合存储池以及监控器。存储集群正如上文所说的，它是有大量的混合存储池组成的。为了系统的高可靠性和高性能，我们将一个监控器和一个混合存储池绑定在一起，组成一个子
@@ -46,7 +44,6 @@ Migrator模块执行。Migrator得到迁移指令之后，进行后续的上锁�
 DOBBS提出了两个重要的概念，局部热均衡和全局热均衡。对于局部热均衡，我们数据对象分为两类，热对象和冷对象。所谓热对象是指的那些访问频率高，短时间内会被多次访问的对象。相反，
 冷对象则是指那些访问频率并不高的对象。为了充分利用SSD的性能优势，我们将热对象都放置于SSD上而将冷对象都放置于HDD上，然后动态地监测数据对象的冷热变化来在SSD和HDD之间迁移对象。
 局部热均衡只是针对每个子集群内部的局部热均衡，因此每个Monitor只能保证所在子集群的局部热均衡。
-
 
 如果将存储集群和Monitor分割成多个子集群，那么极有可能在某个时刻某个虚拟机产生了非常大量的VMDI请求，这样某个子集群会遭受大量的读写请求，数据也会频繁地在SSD和HDD间迁移，这个子集群的效率将会受到极大
 影响。提出全局热均衡的概念就是为了消除上述情况带来的性能波动。全局热均衡针对的粒度是OSD级别的，它会动态监测每个子集群的热度，然后做出迁移指令，有别于局部热均衡的迁移，全局热均衡的迁移是将OSD的数据进
@@ -89,3 +86,58 @@ Migrat Queue中。如果Migrator同时让多个对象进行迁移，那么对整
 上锁和解锁，那么同时大量对象迁移将会影响VM的性能。所以，Migrate Queue保证了系统同时最大迁移数量，如果系统中已经有部分对象在做迁移，那么后续的迁移指令需要等待之前的迁移完成之后才可以执行。
 
 \section{全局热均衡}
+之所以要提出全局热均衡的概念要回到为什么将存储集群和Monitor集群划归成子集群的原因。在本章第一节介绍过，将集群分割为多个子集群是为了避免多Monitor共同管理存储集群可能带来的混乱。但是，分割成多个子集群之后
+Client如何接入系统就会是一个问题，在DOBBS中我们对于全局热均衡有两个方面的考虑，一是静态的全局热均衡，二是动态的全局热均衡。
+
+静态的全局热均衡就是Client在初次接入DOBBS系统时，Center会分配一个子集群给这个Client，Client在之后与系统的交互中就是和这个子集群的Monitor和底层存储之间进行。Center的分配规则
+实际就是一种静态的负载均衡，Center会维护一个所有子集群热度的列表，它每次会把会“冷”的子集群分配给Client。通过这种方式，整个集群可以达到静态的负载均衡，但是随着每个VM上应用的不断变化，这种短暂的负载均衡终将打破。
+所以，DOBBS在静态热均衡的基础上又加入了动态热均衡的设计。
+
+假设这样一种情况，在一段时间内一个VM产生了极大量的VMDI请求并向某个子集群的Monitor汇报了大量的对象数据流信息，那么这样就会导致某一个子集群在突然承受非常大量的IO请求，而这个子集群的Monitor也需要处理大量的数据流
+信息。就如上一节所说的，Monitor会保存一个有序队列，那么大量的数据信息将会导致Monitor频繁更新有序队列。这种情况会大大降低子集群上接入的其他Client的运行效率。为了解决这个问题，DOBBS采用动态热均衡的策略来动态监测每个
+子集群的热度信息，然后做出决策找到最热的子集群再将热度扩散给其他子集群。
+
+\subsection{热度不均衡监测}
+热度不均衡出现在某个子集群在短时间内突然承受大量的VMDI请求，而如何刻画这一情况是全局热均衡关注的一个问题。我们观察发现子集群的热度主要有两个方面来刻画，一是存储集群的访问次数，二是Monitor的性能压力。因为Ceph的对象
+大小是恒定的，所以只考虑存储集群的访问热度是合理的。Monitor上的Reporter模块是负责收集该子集群的热度信息。我们用单位时间内IO请求数来表示存储集群的热度，更加细致地来说，在DOBBS中我们用每秒IO（IO operations Per Second）来表示存
+储集群的热度值。所以Reporter会调用内部接口实时监测存储集群所有OSD上的IOPS值，并进行汇总。而Monitor的热度我们用Monitor的CPU和内存利用率来表示，同样Reporter调用Linux系统调用来实时获取Monitor所在机器的CPU和内存利用率。
+在获得了存储集群的IOPS和Monitor的使用率之后，Repoter将两者归一化之后组合起来，作为子集群的热度值。下面三个等式描述了子集群热度值的计算方式：
+
+\begin{equation}
+    \label{eq:stheat}
+    StorageHeat = \frac{\alpha \sum^n SIO + \beta \sum^m HIO}{m+n}
+\end{equation}
+
+\begin{equation}
+    \label{eq:monheat}
+    MonitorHeat = max(MemoryUsage, CPUUsage)
+\end{equation}
+
+\begin{equation}
+    \label{eq:subheat}
+    SubclusterHeat = StorageHeat + MonitorHeat
+\end{equation}
+
+
+等式\ref{eq:stheat}表示存储集群的热度，其中$SIO$和$HIO$分别表示SSD和HDD的IOPS值，$m$和$n$分别表示了子集群的存储集群内部SSD OSD的数量和HDD OSD的数量。\alpha和\beta是两个经验常数，在局部热均衡的过程中，我们已经将过热
+的对象移动到SSD上而冷的对象放置于HDD上了，所以如果直接来看SSD和HDD对IOPS的贡献并不准确。\alpha和\beta起到了归一化的作用，他们是经过大量实验调参得到的数值。等式\ref{eq:monheat}表示的是Monitor的热度，这里的CPU利用率和
+内存利用率都是用百分数表示的，之所以用二者的最大值是因为Monitor在处理大量数据流信息的时候需要存储在内存中，而计算是周期性的，所以用二者的最大值来表示Monitor的热度值。\ref{eq:subheat}则是将存储集群热度和Monitor热度相加来
+表示子集群的热度值。Repoter定期计算所在子集群的热度信息，然后向Center节点汇报。
+
+在Center节点上，它会保存所有子集群最新的热度值，在每次所有子集群汇报之后都会更新热度值。因此，Center节点总是保存最新的子集群的热度值。为了体现子集群热度的不均衡情况，我们用所有子集群热度的标准差来刻画子集群热度的不平衡，那么
+标准差越大也就说明子集群的热度越不平衡。当然，仅仅根据子集群间的热度不均衡来触发全局热均衡必然是不充分的，我们还通过一个阈值来表示是否有子集群过热，如果出现一个子集群的热度值超过阈值，则会触发全局热均衡。我们通过下面的算法来判断
+是否需要启动全局热均衡，并确定应该从哪个子集群开始做全局热均衡。
+
+
+\begin{algorithm}
+    % \begin{algorithm}[H] % 强制定位
+    \caption{求100以内的整数和}
+    \label{algo:sum_100}
+    \begin{algorithmic}[1] %每行显示行号
+    \Ensure 100以内的整数和 % 输出
+    \State $sum \gets 0$
+    \For{$i = 0 \to 100$}
+        \State $sum \gets sum + i$
+      \EndFor
+    \end{algorithmic}
+\end{algorithm}
