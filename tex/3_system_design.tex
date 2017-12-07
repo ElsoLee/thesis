@@ -81,9 +81,24 @@ SSD和HDD间的数据迁移是一种贪心的策略，我们始终保证热的�
 则产生HDD到SSD的迁移指令。相反，如果遍历到对象是队列2000个以后，并且在SSD上的，则产生SSD到HDD的迁移指令。
 
 \subsection{对象迁移}
-Anlyzer在产生迁移指令之后，Migrator则负责实际的对象迁移工作。Migrator首先会检查，当前的SSD是否已满，如果SSD已满则会终止掉当前的迁移请求。接下来，Migator将每一条迁移指令缓存下来，并存入迁移队列
-Migrat Queue中。如果Migrator同时让多个对象进行迁移，那么对整个系统的性能将会是灾难性的影响。因为对象的传输将会大大占用网络带宽，并且DOBBS为了维护迁移过程中对象的一致性，需要频繁地对Client的对象
+Analyzer在产生迁移指令之后，Migrator则负责实际的对象迁移工作。Migrator首先会检查，当前的SSD是否已满，如果SSD已满则会终止掉当前的迁移请求。接下来，Migator将每一条迁移指令缓存下来，并存入迁移队列
+Migrate Queue中。如果Migrator同时让多个对象进行迁移，那么对整个系统的性能将会是灾难性的影响。因为对象的传输将会大大占用网络带宽，并且DOBBS为了维护迁移过程中对象的一致性，需要频繁地对Client的对象
 上锁和解锁，那么同时大量对象迁移将会影响VM的性能。所以，Migrate Queue保证了系统同时最大迁移数量，如果系统中已经有部分对象在做迁移，那么后续的迁移指令需要等待之前的迁移完成之后才可以执行。
+
+DOBBS为了维护迁移过程中的一致性，会使用Remote Lock技术来对对象上锁，从而解决迁移过程中对一致性的破坏。试想这样一种情况，Analyzer所产生的迁移请求恰好是VM正在访问的对象，在DOBBS中对象迁移的优先级是很高的
+，所以Client上的虚拟机可能在访问这个对象的时候丢失它，这样难免会造成数据的丢失，在一些数据关键型的应用中将带来难以估计的影响。Remote Lock就是做到了由Monitor向Client发起上锁请求，Client上锁成功后会向
+Monitor发送上锁成功请求。只有Monitor在收到上锁成功请求后才会进行后续的迁移。
+
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=10cm]{example/migrationProcess.pdf}
+    \bicaption[fig:migrationprocess]{局部热均衡对象迁移过程}{局部热均衡对象迁移过程}{Fig}{Object Migraton Process of Local Heat Balancing}
+\end{figure}
+
+如图\ref{fig:migrationprocess}所示为DOBBS局部热均衡的对象迁移的前过程，图中省略了Migrate Queue和部分模块。在Analyzer产生迁移请求之后，它会先向Client发送上锁请求，之后Client对要迁移的对象上锁，
+上锁成功后返回给Monitor上锁成功的响应信息，Monitor介绍到之后向被迁移对象的OSD发送迁移指令和方向。OSD接收到之后，调用Ceph OSD Component将该对象传输到指定OSD上，转移完成后通知Monitor，最后Monitor通知
+Client释放对象的锁同时修改Object Table的对应映射关系。
+
 
 \section{全局热均衡}
 之所以要提出全局热均衡的概念要回到为什么将存储集群和Monitor集群划归成子集群的原因。在本章第一节介绍过，将集群分割为多个子集群是为了避免多Monitor共同管理存储集群可能带来的混乱。但是，分割成多个子集群之后
@@ -104,20 +119,27 @@ Client如何接入系统就会是一个问题，在DOBBS中我们对于全局热
 在获得了存储集群的IOPS和Monitor的使用率之后，Repoter将两者归一化之后组合起来，作为子集群的热度值。下面三个等式描述了子集群热度值的计算方式：
 
 
-\begin{equation}
-    \label{eq:stheat}
-    StorageHeat = \frac{\alpha \sum^n SIO + \beta \sum^m HIO}{m+n}
-\end{equation}
+% \begin{equation}
+%     \label{eq:stheat}
+%     StorageHeat = \frac{\alpha \sum^n SIO + \beta \sum^m HIO}{m+n}
+% \end{equation}
 
-\begin{equation}
-    \label{eq:monheat}
-    MonitorHeat = max(MemoryUsage, CPUUsage)
-\end{equation}
+% \begin{equation}
+%     \label{eq:monheat}
+%     MonitorHeat = max(MemoryUsage, CPUUsage)
+% \end{equation}
 
-\begin{equation}
+% \begin{equation}
+%     \label{eq:subheat}
+%     SubclusterHeat = StorageHeat + MonitorHeat
+% \end{equation}
+
+\begin{eqnarray}
+    \displaystyle  StorageHeat = \frac{\alpha \sum^n SIO + \beta \sum^m HIO}{m+n} \label{eq:stheat}\\
+    \displaystyle  MonitorHeat = max(MemoryUsage, CPUUsage) \label{eq:monheat}  \\
+    \displaystyle  SubclusterHeat = StorageHeat + MonitorHeat
     \label{eq:subheat}
-    SubclusterHeat = StorageHeat + MonitorHeat
-\end{equation}
+    \end{eqnarray}
 
 等式\ref{eq:stheat}表示存储集群的热度，其中$SIO$和$HIO$分别表示SSD和HDD的IOPS值，$m$和$n$分别表示了子集群的存储集群内部SSD OSD的数量和HDD OSD的数量。$\alpha$和$\beta$是两个经验常数，在局部热均衡的过程中，我们已经将过热
 的对象移动到SSD上而冷的对象放置于HDD上了，所以如果直接来看SSD和HDD对IOPS的贡献并不准确。$\alpha$和$\beta$起到了归一化的作用，他们是经过大量实验调参得到的数值。等式\ref{eq:monheat}表示的是Monitor的热度，这里的CPU利用率和
@@ -195,7 +217,51 @@ Client如何接入系统就会是一个问题，在DOBBS中我们对于全局热
 就可以知道哪个OSD的IOPS最低，然后将这个OSD作为要被OSD。热扩散过程不能被认为是迁移的过程，它实际上是两个子集群交换OSD的过程。我们在介绍DOBBS系统架构的时候提到过，子集群只是一个逻辑上的概念，而每个子集群之间其实在
 物理网络层面上是互联互通的，所以互相交换OSD是可行的，并且交换OSD只是在逻辑层面上交换，所以对整个集群的物理结构并没有任何影响。
 
+但是大规模的数据传输对系统性能来说也是致命的。因为热扩散的过程是将整个OSD的数据进行交换，这样会带来两方面的性能上的影响。在下一章我们将介绍局部热均衡迁移的过程中，会出现因为数据对象的迁移导致上层虚拟机不能正确访问数据对象的问题，这
+也是因为对象迁移带来的一致性问题，在系统实现的过程中我们使用了Remote Lock这一技术来解决这问题。Remote Lock会对Client上的数据对象上锁，在迁移过程中VM是不能访问到该对象的。那么，如果是将整个OSD迁移，一个OSD的大小大致是120G，而一个
+Ceph对象的默认大小是64MB。如果将整个OSD迁移的话，因为Remote Lock的影响，迁移过程会导致Client上的对象被频发上锁、解锁，于是VM会被暂停运行。在局部热均衡中，一次只是对一个对象迁移，所以上锁带来的影响微乎其微，但是大量对象被上锁解锁，那么
+对于VM是灾难性的。而如果VM上运行的实时应用程序，那更是难以想象的灾难。还有一个方面的性能问题，两个SSD的数据一共有240GB，那么传输过程也会非常久，而且占用大量集群核心网络的带宽。因此，如果将两个OSD的全部对象进行迁移则十分不现实，也严重
+影响集群效率。
 
+为了解决这个问题，我们采用了一个全新的懒汉迁移方式——元数据迁移。前面我们讲过直接将整个OSD的数据进行迁移是不现实的，那么这种方式可以定义成是一种饿汉迁移方式。借用物理学规律，我们知道热量的传递过程也是相对缓慢的，所以我们选择了一种慢速的迁移方式。
+元数据迁移，是一种运用到DOBBS系统架构和局部热均衡的迁移方式，元数据指的是局部热均衡中的Analyzer所维护的数据流信息。在局部热均衡中，我们介绍过数据流信息包括每个对象的热度值以及它所在OSD的编号等信息。在源子集群收到Center的热扩散请求之后，它会先
+检查HeatCollector，得到当前IOPS最大的OSD编号，之后再在Analyzer中再把属于这个最大IOPS OSD所有的对象数据流信息从有序队列中删除，并通过网络传输给目标子集群的Monitor。在目标子集群收到Center发送过来的热扩散请求之后，它会做相似的工作：目标子集群会先
+检查HeatCollector，得到当前IOPS最小的OSD编号，之后再和源子集群的做法相同，然后再通过网络发送给目的子集群。因为DOBBS中，子集群是一个逻辑概念，所以每个子集群的Monitor都会本子集群所有OSD编号的列表。在源子集群和目标子集群互换原信息之后，它们也会修改所在
+子集群的OSD信息。
 
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=15cm]{example/heatdiffusion0.pdf}
+    \bicaption[fig:heatdiffison0]{元数据迁移使能过程}{元数据迁移使能过程}{Fig}{Enable Process of Metadata Migration}
+\end{figure}
 
+元数据迁移的过程是可以证明有效的。元数据迁移和饿汉模式相比，并没有做物理上的数据迁移，而仅仅从逻辑上改变了两个存储集群的中OSD的位置。例如，原来子集群1包含第0、1、3号OSD，而子集群2包含第2、4、6号OSD，现在子集群1作为源子集群，子集群2作为目标子集群，它们交换了
+第0和第2号OSD，那么现在子集群1就包含第2、1、3号OSD，而子集群2包含了第0、4、6号OSD。图\ref{fig:heatdiffison0}所示，就是上面所举的例子的示意图。可以从图中看出元数据迁移只是修改了OSD的逻辑结构，而并没有在两个OSD上互相交换数据。在最终交换完成后，只是完成了
+元数据迁移的使能过程。
+
+我们将元数据迁移分为两个过程，一个是使能过程，还有一个是懒迁移过程。使能过程也就上上文所提到的，两个子集群修改自身的逻辑结构，然后两个Monitor交换元数据的过程。当然从使能过程的结果来看，其实并没有真正的实现热量的转移，而只是修改了逻辑结构，对问题的本质并没有实质性的
+影响。我们成元数据迁移是一种混合的方式，懒迁移过程实际有局部热均衡参与。我们将源子集群的属于IOPS最大OSD的元数据拷贝到了目标子集群的Anlyzer中，从目标子集群的Analyzer角度看来，就像是从Client新汇报出大量数据对象。根据上一节我们寻找源子集群和目标子集群的策略可以知道，
+目标子集群一定是当前热度值最低的子集群，而源子集群一定是当前热度值最高的子集群，并且我们所交换的OSD也是它们彼此最“冷”和最“热”的OSD。所以，目标子集群所收到的元数据的热度值一定是比其自身所有OSD上对象的热度值的最大值都要大的。根据局部热均衡的原理，目标子集群Analyzer在
+收到这些热度值很高的元数据之后，它会优先将这些元数据所对应的数据对象迁移到它的SSD OSD上。相反，在源子集群接收到目标子集群的元数据之后，它会优先将这些元数据锁对应的对象进行转移。当然，具体是如何转移要依照具体情况决定。这个过程就是，元数据迁移的懒迁移过程，可以看到我们
+并没有让Monitor立即去迁移所有的数据，而是交给了局部热均衡去做迁移的工作，这相当于是一种缓慢的迁移方式。元数据迁移是有效的，因为在修改OSD的逻辑结构之后，局部热均衡充当了迁移者，它把过热的OSD上的热量辐射到目标子集群的其他OSD上去，做到了热量扩散。
+
+元数据迁移过程的使能过程的迁移对象是对象的数据流信息（元数据），这个数据流信息实际上是局部热均衡用来决策的重要依据。假设有这样一个情况，在局部热均衡的过程中，某个Monitor正在执行对象迁移指令，它向Client发送了上锁指令，随即Client对要被迁移的对象上锁，可是在这次对象
+迁移过程没有执行完之前，该Monitor又收到了元数据迁移请求，它立即响应请求将部分元数据传送到目标子集群。在元数据迁移完成后，OSD已经互相交换，并且Client上的Monitor Table也已经被更新。那么，Monitor则始终不能发送release-lock请求对应的Client，Client上的这个对象可能
+会被永久得阻塞，这样Client上运行的VM也将受到影响。为了解决这个问题，我们提出了一个try-lock机制。该机制会首先尝试从源子集群和目标子集群上获得锁，但是如果其中有子集群正在执行局部热均衡的对象迁移，则返回失败，即不能获得锁。当且仅当Center获得了源子集群和目标子集群的两个锁
+之后才算上锁成功，才可以继续元数据迁移。在两个集群上的锁，一旦上锁之后，Monitor就不能产生对象迁移请求，直到锁释放才可以进行对象迁移。
+
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=12cm]{example/MetaDataMigration.pdf}
+    \bicaption[fig:heatdiffison1]{热扩散过程}{热扩散过程}{Fig}{Process of Heat Diffusion}
+\end{figure}
+
+图\ref{fig:heatdiffison1}所示为DOBBS的热扩散过程的示意图。热扩散过程可以总结成7个步骤，在Center找到需要被扩散的源子集群和目标子集群之后，它会首先通过try-lock机制向两个子集群的Monitor获得锁。只有当同时过得两把锁之后，Center执行第二步也就是向源子集群和目标子集群发送
+元数据迁移指令。两个子集群的Monitor接受到指令之后，它们查询各自的HeatCollector，然后将元数据进行交换，再修改两个子集群的存储逻辑结构，两个Monitor更新各自的OSD列表。在这些过程结束之后，Center释放两个子集群的锁，并更新Client上的Monitor Table。一旦锁被释放，两个Monitor
+就开始进行局部热均衡，也就是开始懒迁移过程。
+
+\section{本章小结}
+本章主要从DOBBS系统的架构、局部热均衡、全局热均衡等三个方面介绍了系统的设计。DOBBS的架构是采用了一种两层的架构方式，整个系统主要有4中类型的节点，其中Client节点是搭载虚拟机的节点，Monitor是每个子集群的监视器，Center则负责全局热均衡，最后就是OSD节点。OSD根据存储介质被分成了
+SSD OSD和HDD OSD。DOBBS还将Monitor和混合存储池合并成一个逻辑结构——子集群。局部热均衡是为了充分利用SSD的优势，并以一个经济的方式实现混合存储，我们通过动态监测对象的数据流信息计算对象热度来迁移对象到合适的OSD上。全局热均衡则是因为我们采用分布式多节点Monitor之后产生的数据访问
+不均衡现象，所以要通过一种动态的方式来进行负载均衡，也就是热量的传递。
 
