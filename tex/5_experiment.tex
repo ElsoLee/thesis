@@ -59,12 +59,49 @@ Center节点感知到之后，发送热扩散请求，这样Monitor的相应利�
 
 \begin{figure}[!htp]
     \centering
-    \includegraphics[width=10cm]{example/SingleMonitor.pdf}
-    \bicaption[fig:heatdiffison0]{去掉全局热均衡的DOBBS子集群热度值}{去掉全局热均衡的DOBBS子集群热度值}{Fig}{Heat Value of Subcluster without Global Heat Balancing}
+    \includegraphics[width=9cm]{example/SingleMonitor.pdf}
+    \bicaption[fig:singlemon]{去掉全局热均衡的DOBBS子集群热度值}{去掉全局热均衡的DOBBS子集群热度值}{Fig}{Heat Value of Subcluster without Global Heat Balancing}
 \end{figure}
 
 \begin{figure}[!htp]
     \centering
-    \includegraphics[width=10cm]{example/WithGHB.pdf}
-    \bicaption[fig:heatdiffison0]{原始DOBBS的子集群热度值}{原始DOBBS的子集群热度值}{Fig}{Heat Value of Subcluster with Original DOBBS}
+    \includegraphics[width=9cm]{example/WithGHB.pdf}
+    \bicaption[fig:withghb]{原始DOBBS的子集群热度值}{原始DOBBS的子集群热度值}{Fig}{Heat Value of Subcluster with Original DOBBS}
 \end{figure}
+
+
+
+图\ref{fig:singlemon}和图\ref{fig:withghb}分别表示去掉全局热均衡特性的子集群和原始DOBBS子集群的热度值随时间的变化。DOBBS的全局热均衡使得各个子集群的热度值相对均衡，不会出现某个子集群热度值畸高的情况，DOBBS解决这个问题
+是通过将过热子集群的“热量”扩散到其他子集群来实现的。两个图中的纵坐标表示子集群的热度值，该热度值是在由公式\ref{eq:subheat}计算得出的，我们在每个Monitor加入了debug模块，专门用来追踪热度值随时间的变化情况。横坐标为汇报时间，
+在这两个图中我们将汇报间隔平分成数个时间槽，并且每个时间槽都有相同的长度。为了测试全局热均衡的有效性，我们实现了一个没有Center节点的集群，在这个集群中的Monitor不会收集存储集群的IOPS也不会计算热度值，每个子集群都是独立的结构。
+在测试的时候，我们设计了一个在VM上运行的独特的数据流。数据流的产生是通过修改一个叫做Filebench的基准测试工具实现的，我们将Filebench运行在Client的虚拟机上动态产生对虚拟机磁盘的访问请求。在本实验中，我们设置的热度阈值为30。
+
+对于这两个实验，我们采取了一个相对极端的做法，我们将若干运行了Filebench的Client接入在subcluster 1上，而其他子集群只是接入平稳运行虚拟机的Client。这个Filebench的数据流
+实际上是模仿虚拟机的加载过程在开始会有一个大量访问增加的情况，之后会趋于平稳。从图\ref{fig:singlemon}很清楚的看到，在20-45的时间槽内出现了一个连续的高峰，而其他子集群的热量则是处于
+很小的水平的。而在50-150的时间段内，subcluster 1都一直处于热度值的高位，此时各个子集群之间的热度值标准差已经很大。从图\ref{fig:withghb}可以看出，采用同样的数据流，虽然在20-45的时间槽
+内出现过高峰，但是高峰并不平稳，而是立刻降了下来，即使出现了新的高峰，也都可以快速地下降。观察其他子集群的热度值，可以显著得发现其他子集群的热度值相较于图\ref{fig:singlemon}有了显著提升，这
+就说明了全局热均衡把subcluster 1的热量分摊到了其他子集群。综上，我们可以证明全局热均衡可以消除一个子集群过热的情况。
+
+\begin{table}
+    \centering
+    \bicaption[tab:avgheat]{子集群的平均热度值}{子集群的平均热度值}{Table}{Average Heat Value of Subclusters}
+    \begin{tabular}{@{}llr@{}} \toprule
+       & Original DOBBS & without Heat Diffusion\\ \midrule
+      subcluster 1 & 11.05 & 16.04 \\
+      subcluster 2 & 10.69 & 9.0 \\
+      subcluster 3 & 8.28 & 7.28 \\
+      subcluster 4 & 10.73 & 8.75 \\
+    \end{tabular}
+\end{table}
+
+我们不仅通过图的方式说明全局热均衡的有效性。表格\ref{tab:avgheat}所示，可以从数值上直观地看到各个子集群的平均热度值。明显的看到，subcluster 1在原生DOBBS下的热度值明显低于没有全局热均衡的DOBBS。
+而其他子集群的热度值也明显有所增加，所有热度值的标准差明显减小。
+
+尽管DOBBS消除了WHOBBS存在的性能问题并且全局热均衡又可以做到将过热的子集群的”热量“扩散到其他子集群上，可是在Client上运行的VM可能并不能获得比WHOBBS更好的性能提升。我们考虑到DOBBS的热扩散过程，
+为了保证迁移过程中数据的一致性，防止热扩散的使能过程在传输元数据时和局部热均衡互相干扰，我们用try-lock机制来保护他们的相互影响。由try-lock机制我们可以知道，一旦对两个集群上锁，那么局部热均衡将
+无法继续进行，同理在这个时间间隔内Client也无法向Monitor汇报对象的数据流信息。这样势必会影响Client上VM的运行。但是，这个影响其实也是微乎其微的，因为在我们大量试验下发现，热扩散的使能过程的耗时
+基本上是小于200ms。所以，DOBBS相比于WHOBBS对Client上运行的VM并没有做到优化。
+
+\section{本章小结}
+本章我们对DOBBS的系统设计和系统实现加以了实验上的论证。首先是对实现环境的搭建，我们配置了实验的硬件环境和软件环境。为了体现DOBBS消除了WHOBBS存在的性能问题，我们不仅部署了DOBBS在Monitor上，也配置了WHOBBS在Monitor上。本章第二节，我们引用了WHOBBS的论文结果论证了本文中的局部热均衡的高效性。其次，我们用WHOBBS的Monitor与DOBBS的Monitor做比，证明了DOBBS成功地消除WHOBBS的性能问题。之后，我们配置了一套不具有全局热均衡的DOBBS集群与原生DOBBS集群在相同数据流下作比较，实验结果可以明显的证明
+DOBBS全局热均衡的有效性。
