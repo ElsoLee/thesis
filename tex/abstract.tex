@@ -4,11 +4,41 @@
 %%==================================================
 
 \begin{abstract}
+    随着互联网行业的发展，如今的互联网正处于一个信息爆炸的时代。IaaS（Infrastructure as a Service）云常常被用来部署大数据分析和其他各种类型的应用。
+    虚拟机被认为构建IaaS云的基础，而虚拟机常常是基于虚拟机磁盘镜像（VMDI）构建的。对象存储可以让云提供商轻松地扩大存储规模，并且它通过
+    备份数据副本的方式保证了存储的高可用性。存储介质方面，SDD在性能、能耗等方面相较于HDD有较大的优势，但是由于其高昂的价格与存储空间，让SSD完全提成HDD成为企业级
+    数据存储还是太现实。
+
+    WHOBBS\cite{lingxuan2015whobbs}是本实验室之前关于混合存储的研究，它基于对象存储为虚拟机提供混合存储的块服务。它在Ceph\cite{weil2006ceph}的基础上，
+    构建了一套完整的混合存储系统，但是WHOBBS由于其单监控器架构，导致监控器成为系统的性能负担。本文设计和实现DOBBS系统，它在WHOBBS的基础上进行了扩展，DOBBS
+    为多监控器架构，并将整个集群分割成多个子集群。为了充分利用SSD和HDD混合存储的高效性，我们提出了局部热均衡的概念。在分割成子集群之后可能遇到子集群间热度分布不均衡的
+    情况，我们提出了一个全新的叫做全局热均衡的概念。全局热均衡主要包括热度不均衡的检测和热扩散散。在热度不均衡检测部分，我们提出了衡量子集群热度的方法以及热度检测的算法。
+    热扩散是全局热均衡的重点，为了解决大规模数据迁移，我们提出了全新的源自于物理学的概念——热扩散。我们只对元数据进行迁移，并且修改子集群的逻辑结构，而后续的数据迁移则是
+    交给局部热均衡来完成的。
+
+    在系统设计的基础上，我们对系统加以实现，并介绍了DOBBS的各个模块的实现细节和主要工作流。在文章的最后，为了验证DOBBS的高效性，我们进行了大量的实验。
+    大量实验证明，DOBBS解决了WHOBBS的单监控器的性能问题，同样也验证了全局热均衡的有效性。
+
 
 \keywords{\large 分布式存储 \quad 混合存储 \quad 负载均衡}
 \end{abstract}
 
 \begin{englishabstract}
+    With the development of the Internet industry, the Internet today is in an era of information explosion. IaaS(Infrastructure as a Service)
+    are often used to deploy big data analytics and other types of applications. Object storage allows cloud providers to easily scale up their storage, 
+    and it ensures high availability of storage by backing up data copies. In the aspect of storage media, SSD in performance, energy consumption and other 
+    aspects compared to HDD has greater advantage, because of its high price and limited capacity, it is still a long way to go before completely using SSDs 
+    for enterprise data storage.
+
+    WHOBBS\cite{lingxuan2015whobbs} is our previous research on hybrid storage. WHOBBS, while effective, only supports single monitor architecture as it 
+    concentrates all the monitoring tasks on one single node. Thus, single monitor would be a serious problem for WHOBBS. In this thesis, we design and implement
+    DOBBS, which extends WHOBBS with multi-monitor architecture and splits the cluster into subclusters. We put forward the concept of Local Heat Balancing for 
+    managing the system efficiently.Local heat balancing, actually, indicates fully exploiting the unique performance potential of SSD, and ensures high accessed data 
+    reside on SSDs. We propose a concept named Global Heat Balancing which ensures the whole cluster is in the state of heat balance. Global Heat Balancing includes two parts,
+    heat imbalance detection and heat diffusion. 
+
+    Based on system design, we implement the system and introduce the implementation details and the main workflows of each module of DOBBS. In order to verify the efficiency of 
+    DOBBS, we conducted a large number of experiments. A large number of experiments show the efficiency of DOBBS and the effectiveness of Global Heat Balancing.
 
 \englishkeywords{\large Distribued Storage, Hybrid Storage, Load Balance}
 \end{englishabstract}

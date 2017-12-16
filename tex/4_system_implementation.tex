@@ -8,6 +8,27 @@
 \label{chap:systemimpl}
 本章在上一章的基础上，介绍DOBBS在实现过程中所用到技术以及各个模块的具体实现情况。
 
+\section{实验工具和平台}
+\subsection{Ceph}
+Ceph是一个免费开源的存储平台，它将对象存储实现在一个分布式计算机集群内，并且为对象级、文件级和块级存储提供了接口。Ceph主要针对完全分布式操作，没有单点故障，可以扩展到exabyte级别，并且有非常高的可用性。
+Ceph的软件库为客户端应用程序提供了对RADOS基于对象的存储系统的直接访问，同时也为Ceph的一些高级功能，包括RADOS Block Device（RBD），RADOS Gateway（RGW）和Ceph File System（Ceph FS）。
+
+Ceph的对象存储系统允许用户将Ceph安装为精简配置的块设备。 当应用程序使用块设备将数据写入Ceph时，Ceph会自动在整个群集中对数据进行分条和复制。 Ceph的RADOS Block Device（RBD）还集成了基于内核的虚拟机（KVMs）
+Ceph的块设备可以被虚拟化，为虚拟机提供块设备服务在一些主流的虚拟化平台都使用Ceph，例如Apache CloudStack、Open Stack和OpenNebula等等。
+
+DOBBS在Ceph的基础上进行修改是因为，Ceph是对象存储系统，当虚拟机在Ceph存储集群创建VMDI之后，Ceph会默认地把它分割成等大小的对象，而DOBBS需要动态监测虚拟机VMDI的数据流，那么如果VMDI已经被等大小分割那么我们就可以直接地
+监测Ceph对象而不是整个VMDI数据块，这样把监测和迁移的粒度放到比较小，帮助我们快速准确的迁移数据。还有一点就是，Ceph与虚拟化的结合很充分，所以不需要我们特别地为Ceph进行额外的修改。
+
+\subsection{QEMU}
+QEMU是快速模拟器（Quick Emulator）的缩写，它是一个免费的开源托管型虚拟机管理程序，可执行硬件虚拟化。QEMU是托管的虚拟机监视器：它通过动态二进制转换模拟CPU，并提供一组设备模型，使其能够运行各种未修改的客户机操作系统。 
+它也可以与KVM一起使用，以接近本机的速度运行虚拟机。 QEMU还可以为用户级进程执行CPU仿真，允许为一个体系结构编译的应用程序在另一个体系结构上运行。QEMU的优势在于，它足够轻量级并且已经被合并入Linux内核。而在本论文中选用
+QEMU作为虚拟机管理程序主要有两个原因，一是因为QEMU是开源软件我们可以直接对其源代码进行侵入式修改，二是QEMU已经有了针对于Ceph的虚拟块存储服务。
+
+\subsection{Apache Thrift}
+Thrift是一个RPC（Remote Procedure Call）框架。Thrift是一种接口定义语言和二进制通信协议，用于定义和创建多种语言的服务。它被用作远程过程调用（RPC）框架，并在Facebook上为“可扩展的跨语言服务开发”而开发。Thrift的使用
+非常方便，用户只需要写一个自定义语言的文件用于定义接口和部分数据结构，之后主要输入Thrift的指令便可以生成对应语言的服务器/客户端文件。在DOBBS的实现中，我们用Thrift作为跨服务器远程过程调用的工具，我们只需要编写Thrift自己定义
+语言的接口语言，并可以在各个服务器上使用，十分便捷。
+
 \section{系统模块实现}
 \begin{figure}[!htp]
     \centering
@@ -71,12 +92,12 @@ migratingSet是在发送请求之后将oid放入其中，直到迁移完成后�
 HeatCollector的功能是获取子集群的所有事实资源信息的。它主要有三个成员变量，分别是storageIOPS（存储集群IOPS）、CPUUsage（Monitor的CPU利用率）和memoryUsage（Monitor的内存利用率）。其中storageIOPS的数据类型是std::map<int, long>，这个map数据结构的键为osd\_id，值为对应OSD的IOPS值。
 CPUUsage和memoryUsage的类型都是double，即占用百分比。
 
-collecting()是一个线程入口函数。在系统初始化之后，启动collecting线程，该线程的作用就是不断调用getStorageIOPS()、getCPUUsage()和getMemoryUsage()接口获得当前实时的子集群资源信息，并更新它的三个成员变量。对于getStorageIOPS()解救，它会从在Analyzer的osd\_list获取子集群所包含OSD的编号，
-然后再调用本子集群的OSD上的getIOPS()接口，最后将最新的存储集群IOPS值以map的方式返回。getCPUUsage()接口则是调用Linux的系统调用查看/proc/stat文件来获取当前CPU利用率。getMemoryUsage()则调用sysinfo()系统调用来获得当前的内存利用率的。
+getHeatValue()是HeatCollector对外提供的接口，该接口被调用之后，它会以此调用getStorageIOPS()、getCPUUsage()和getMemoryUsage()接口获得当前实时的子集群资源信息，并更新它的三个成员变量。对于getStorageIOPS()，它会从在Analyzer的osd\_list获取子集群所包含OSD的编号，
+然后再调用本子集群的OSD上的getIOPS()接口，最后将最新的存储集群IOPS值以map的方式返回。getCPUUsage()接口则是调用Linux的系统调用查看/proc/stat文件来获取当前CPU利用率。getMemoryUsage()则调用sysinfo()系统调用来获得当前的内存利用率的。在getHeatValue()成功调用这些接口
+之后，它会根据公式\ref{eq:stheat}计算当前实时的热度值并返回给调用者。
 
 \subsubsection{Reporter}
-Reporter的功能则是汇总子集群的资源利用信息，并定时发送给Center。Reporter包含一个成员变量，就是当前子集群的实时热度是heatValue，它的类型是double。reporting()函数是一个线程入口函数，该线程的主要功能就是不断的调用HeatCollector的三个get接口，然后再使用公式\ref{eq:subheat}来计算
-子集群当前的热度值，在每次获取之后都会调用Center的reportFromMonitor()接口把热度值传输给Center。
+Reporter的功能则是汇总子集群的资源利用信息，并定时发送给Center。Reporter包含一个成员变量，就是当前子集群的实时热度是heatValue，它的类型是double。reporting()函数是一个线程入口函数，该线程的主要功能就是不断的调用HeatCollector的getHeatValue()接口，在每次获取之后都会调用Center的reportFromMonitor()接口把热度值传输给Center。
 
 \subsection{Center模块实现}
 
@@ -105,3 +126,81 @@ finishDiffusion()结构是在源子集群和目标子集群结束全局热均衡
 
 在上一章已经讲过，当Client初次接入系统时，Center会分配一个相对较“冷”的子集群给这个Client。在Client初次接入时，它会调用registerNewClient()接口，再把自己的IP地址通过传参的方式发送给Center。这个接口会遍历subHet，找到一个热度值最低的
 子集群，然后将这个子集群Monitor的id返回给Client，最后Center把这个Client的IP置于connectedClient中。
+
+\subsection{Client模块实现}
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=12cm]{example/implclient.pdf}
+    \bicaption[fig:implclient]{客户端模块类图}{客户端模块类图}{Fig}{Class Diagram of Client}
+\end{figure}
+
+如图\ref{fig:implclient}为Client模块的类图。Client模块是运行虚拟机和虚拟机管理器的模块，该模块的IO Controller、Object Table和Gather这三个类的实现与WHOBBS基本一致，所以本文不再过多赘述。但是，我们在原有实现的基础上加入了Monitor Table类，用于负责全局热均衡后系统的OSD和Monitor之间
+的变化。
+
+因为Client的设计，我们要截取VM对对象访问的请求，这就需要我们对Ceph的原生代码做出修改。我们主要修改了Ceph librbd模块的代码，在Ceph调用底层对象传输之前，我们让它先调用IO Controller的findOSD()接口。IO Controller的findOSD()接口是以对象ID
+作为参数，然后在Object Table中调用getObjOSD()接口进行查询对象当前所对应的OSD编号，然后返回给Ceph之后，再进行后续的对象访问。值得注意的是，因为DOBBS的多Monitor设计，以及静态全局热均衡，所以我们需要在Client初次接入系统的时候可以获得它所在的默认
+子集群。因此，与WHOBBS不同，我们在IO Controller加入了一个接口setDefaultSub()这个是用于Center设置当前Client默认子集群的接口。当然，为了在Client第一次接入DOBBS才会去向Center获得默认子集群编号，我们也对Ceph的源代码进行了修改。
+
+Object Table的实现与WHOBBS没有区别，本文仅介绍各个接口的作用，具体细节不再介绍。首先，该类包含两个成员变量，分别是object\_table和object\_lock。它们都是std::map的数据结构，object\_table是用来保存对象ID和OSD编号的映射关系，而object\_lock并
+不保存信息，只是保存那些对象上了锁。而getObjOSD()和setObjOSD()则是对object\_table进行操作，分别是通过对象ID获取对应的OSD编号，还有就是修改object\_table的内容。lockObj()和releaseObj()这两个接口都是在局部热均衡过程中保证一致性对对象上锁和解锁
+所用到的接口。loadObjTable()和saveObjTable()则是用于在DOBBS系统启动和关闭后将object\_table存盘和读取的接口。
+
+我们在WHOBBS原有Gather类的基础上进行了扩展。gather()是线程入口函数，它的功能就是定时向Monitor发送对象的数据流信息。我们定义对象的数据流信息包括，对象ID（oid）、OSD ID(sid)、访问类型（access\_type）、访问次数（access\_count）。与WHOBBS不同，在WHOBBS中只有一个
+Monitor存在，所以所有Client都只需要向同一个Monitor发送自己的数据流信息。对于DOBBS，我们的Monitor会有多个，而且由于全局热均衡，OSD也会随之发生变化。在DOBBS的设计中，OSD是与子集群绑定的，所以我们需要保证Client可以实时知道每个OSD都在哪个子集群中。
+Monitor Table就是用来保存子集群和OSD的信息。gather线程在每次向Monitor发送之前，都会通过Monitor Table查询到当前对象所在的OSD位于哪个子集群，然后将相同子集群的对象数据流信息组合成一个列表共同发送给对应的Monitor。
+
+Monitor Table类的主要功能，首先是保存当前最新的OSD和子集群的信息，其次就是接受来自Center的更新，还有就是Gather会来查询。它有一个叫做monitor\_osd的成员变量，它的类型是std::map<std::string, std::string>，它存储了OSD ID到子集群Mointor的IP地址之间的映射关系。
+setMonitorOSD()接口是由Center远程调用的，在全局热均衡的使能过程之后Center会通知所有连接到系统的Client更新各自的Monitor Table。getMonitor()接口则是开放给Gather用于查询对象所在子集群的，它传入的参数是OSD ID，返回值为Monitor的IP地址。
+
+\subsection{OSD模块实现}
+对于OSD模块的实现，我们完全沿用了WHOBBS的实现方案没有做更多的扩展，所以本小节只做简要的概括。可以从图\ref{fig:implmain}中看到，OSD上的Migrator负责接收来自于Monitor的迁移请求，在接收到之后，它只需要调用Ceph的OSD组件即可完成对象的迁移。而Storage Reporter则是调用了
+操作系统指令获得当前磁盘（SSD/HDD）的IOPS值。Monitor上的Heat Collector类会远程调用Storage Reporter的接口获得当前的IOPS值。
+
+\section{系统主要工作流程}
+本小结主要介绍DOBBS的主要工作流程，但是局部热均衡中的工作流程，如对象的迁移、对象数据流信息的获取以及虚拟机的IO请求这些工作流程与WHOBBS中的实现并没有太大的区别，所以本小结也将不再对局部热均衡中的工作流程做过多的叙述。
+全局热均衡是一个复杂的过程，我们将它抽出三个比较主要的工作流程来进行介绍，分别是客户端接入工作流程、监控器获得并汇报子集群热度信息工作流程和全局热均衡使能过程工作流程。客户端接入过程，是静态的全局热均衡的保证并且还是让
+客户端可以顺利与系统交互的重要保证。监控器获得并汇报子集群热度信息的过程也就是Center获得各个子集群热度的过程，这对Center进行子集群热度不均衡检测尤为重要。全局热均衡使能过程是全局热均衡最重要的一环，本小结从Center发出
+迁移指令开始来叙述全局热均衡的使能过程。
+
+\subsection{客户端接入工作流程}
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=12cm]{example/seqinit.pdf}
+    \bicaption[fig:seqinit]{客户端接入的工作流程}{客户端接入的工作流程}{Fig}{The Work Flow of Client First Access}
+\end{figure}
+
+客户端初次接入DOBBS的工作流程如图\ref{fig:seqinit}所示。从图中可以看到，IO Controller会首先调用Center的Balancer的registerNewClient()接口，然后该接口通过查询subHeat，将当前热度值最低的子集群发送给IO Controller。同时，
+它会把请求接入的Client的IP地址写入connetedClient中，然后把当前系统最新的monitor\_osd通过调用setMonitorSub()发送给这个初次接入的Client。
+
+\subsection{监控器获得并汇报子集群热度信息工作流程}
+图\ref{fig:seqhet}所示，是子集群的Monitor向Center发送当前子集群热度值的工作流程，这个工作流程还包括Monitor的HeatCollector定期从子集群的OSD中获取IOPS信息，并根据
+公式\ref{eq:stheat}计算子集群热度，最后再把计算好的热度值通过全程调用接口发送给Center。
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=12cm]{example/seqhet.pdf}
+    \bicaption[fig:seqhet]{监控器获得并汇报子集群热度信息工作流程}{监控器获得并汇报子集群热度信息工作流程}{Fig}{The Work Flow of Monitor Reports Heat}
+\end{figure}
+对于该工作流，值得注意的是Reporter发起的getUsage请求是由Reporter的reporting线程发送的，reporting线程则是定时以固定的时间间隔发起getUsage请求。HeatCollector在收到请求
+之后，会先去在Analyzer上去查询本子集群有哪些OSD。在这之后，它会通过查询到的OSD列表调用每个OSD上的getStorageIOPS()接口，接口返回后，HeatCollector将其记录并依次调用getCPUUsage()
+和getMemoryUsage()接口，最后通过公式计算出热度值并调用Center的reportFromMonitor()接口将它传输给Center。
+
+\subsection{全局热均衡使能过程工作流程}
+\begin{figure}[!htp]
+    \centering
+    \includegraphics[width=12cm]{example/seqghb.pdf}
+    \bicaption[fig:seqghb]{全局热均衡使能过程工作流程}{全局热均衡使能过程工作流程}{Fig}{The Work Flow of Enable Process of Global Heat Balancing}
+\end{figure}
+
+全局热均衡是本论文的一个核心概念，而全局热均衡的使能过程更是关键。图\ref{fig:seqghb}所以为全局热均衡的使能过程的工作流程。在Balancer的不均衡检测算法检测出不均衡之后，就
+启动了使能过程。首先就是为了解决迁移过程中的一致性问题，我们用try-lock机制来对Monitor上锁。但是图\ref{fig:seqghb}中，我们假设的是成功上锁之后的工作流程。如果不能成功地从
+目标子集群和源子集群获得锁，则不会进行后续的使能过程。
+
+在成功获得两个Monitor的锁之后，Balancer会调用源子集群Monitor的Analyzer的beginHeatDiffusion()接口。之后，源子集群会查询最大IOPS的OSD然后将其对应的元数据（对象热度信息）打包
+发送给目标子集群，通过目标子集群的exchangeMetadata()接口。目标子集群再去查询当前子集群IOPS最低的OSD，将该OSD对应的元数据返回给源子集群。在所有过程完成之后，源子集群再调用Balancer的
+finishDiffusion()接口，完成元数据交换。随后，Balancer对两个子集群的Monitor解锁。最后则是更新所有Client上的Monitor Table。
+
+\section{本章小结}
+本章基于上一章设计的基础上对DOBBS的系统各个模块的设计进行了介绍。首先，我们介绍了DOBBS构建过程所用到的工具和开源项目，主要有Ceph、QEMU和Apache Thrift。我们选用的主要开发语言为C++。本章
+第二小节，我们首先介绍了DOBBS的各个模块的类图框架，然后对各个模块分别展开了叙述。因为DOBBS是在WHOBBS的基础上进行的扩展和修改，所以我们对WHOBBS部分的实现并没有做出详细的叙述。本章第三小节则是
+对系统的主要工作流程的抽象与总结。我们对全局热均衡的主要三个流程进行了详细的介绍。下一章，则是根据本章所实现的系统做出实验验证。
+
